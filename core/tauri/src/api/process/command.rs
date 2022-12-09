@@ -127,15 +127,37 @@ impl ExitStatus {
   }
 }
 
+/// Struct containing command output
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct CommandOutput(pub Vec<Buffer>);
+
+impl From<&str> for CommandOutput {
+  fn from(str: &str) -> CommandOutput {
+    match str.len() {
+      0 => CommandOutput::default(),
+      _ => CommandOutput(vec![Buffer::Text(str.to_owned())]),
+    }
+  }
+}
+
+impl From<Vec<u8>> for CommandOutput {
+  fn from(bytes: Vec<u8>) -> CommandOutput {
+    match bytes.len() {
+      0 => CommandOutput::default(),
+      _ => CommandOutput(vec![Buffer::Raw(bytes)]),
+    }
+  }
+}
+
 /// The output of a finished process.
 #[derive(Debug)]
 pub struct Output {
   /// The status (exit code) of the process.
   pub status: ExitStatus,
   /// The data that the process wrote to stdout.
-  pub stdout: String,
+  pub stdout: CommandOutput,
   /// The data that the process wrote to stderr.
-  pub stderr: String,
+  pub stderr: CommandOutput,
 }
 
 fn relative_command_path(command: String) -> crate::Result<String> {
@@ -356,37 +378,24 @@ impl Command {
   /// # Examples
   ///
   /// ```rust,no_run
-  /// use tauri::api::process::Command;
+  /// use tauri::api::process::{Command, CommandOutput};
   /// let output = Command::new("echo").args(["TAURI"]).output().unwrap();
   /// assert!(output.status.success());
-  /// assert_eq!(output.stdout, "TAURI");
+  /// assert_eq!(output.stdout, CommandOutput::from("TAURI"));
   /// ```
   pub fn output(self) -> crate::api::Result<Output> {
     let (mut rx, _child) = self.spawn()?;
-
     let output = crate::async_runtime::safe_block_on(async move {
       let mut code = None;
-      let mut stdout = String::new();
-      let mut stderr = String::new();
+      let mut stdout = CommandOutput::default();
+      let mut stderr = CommandOutput::default();
       while let Some(event) = rx.recv().await {
         match event {
           CommandEvent::Terminated(payload) => {
             code = payload.code;
           }
-          CommandEvent::Stdout(line) => match line {
-            Buffer::Text(line) => {
-              stdout.push_str(line.as_str());
-              stdout.push('\n');
-            }
-            Buffer::Raw(_) => {}
-          },
-          CommandEvent::Stderr(line) => match line {
-            Buffer::Text(line) => {
-              stderr.push_str(line.as_str());
-              stderr.push('\n');
-            }
-            Buffer::Raw(_) => {}
-          },
+          CommandEvent::Stdout(line) => stdout.0.push(line),
+          CommandEvent::Stderr(line) => stderr.0.push(line),
           CommandEvent::Error(_) => {}
         }
       }
@@ -558,8 +567,8 @@ mod tests {
     let cmd = Command::new("cat").args(["test/api/test.txt"]);
     let output = cmd.output().unwrap();
 
-    assert_eq!(output.stderr, "");
-    assert_eq!(output.stdout, "This is a test doc!\n");
+    assert_eq!(output.stderr, CommandOutput::from(""));
+    assert_eq!(output.stdout, CommandOutput::from("This is a test doc!"));
   }
 
   #[cfg(not(windows))]
@@ -568,7 +577,45 @@ mod tests {
     let cmd = Command::new("cat").args(["test/api/"]);
     let output = cmd.output().unwrap();
 
-    assert_eq!(output.stdout, "");
-    assert_eq!(output.stderr, "cat: test/api/: Is a directory\n");
+    assert_eq!(output.stdout, CommandOutput::from(""));
+    assert_eq!(
+      output.stderr,
+      CommandOutput::from("cat: test/api/: Is a directory")
+    );
+  }
+
+  #[cfg(not(windows))]
+  #[test]
+  fn test_cmd_output_raw_output() {
+    let cmd = Command::new("cat")
+      .args(["test/api/test.txt"])
+      .encoding(EncodingWrapper::Raw);
+    let output = cmd.output().unwrap();
+
+    assert_eq!(output.stderr, CommandOutput::from(vec![]));
+    assert_eq!(
+      output.stdout,
+      CommandOutput::from(vec![
+        84, 104, 105, 115, 32, 105, 115, 32, 97, 32, 116, 101, 115, 116, 32, 100, 111, 99, 33
+      ])
+    );
+  }
+
+  #[cfg(not(windows))]
+  #[test]
+  fn test_cmd_output_raw_output_fail() {
+    let cmd = Command::new("cat")
+      .args(["test/api/"])
+      .encoding(EncodingWrapper::Raw);
+    let output = cmd.output().unwrap();
+
+    assert_eq!(output.stdout, CommandOutput::from(vec![]));
+    assert_eq!(
+      output.stderr,
+      CommandOutput::from(vec![
+        99, 97, 116, 58, 32, 116, 101, 115, 116, 47, 97, 112, 105, 47, 58, 32, 73, 115, 32, 97, 32,
+        100, 105, 114, 101, 99, 116, 111, 114, 121
+      ])
+    );
   }
 }

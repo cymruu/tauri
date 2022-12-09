@@ -32,7 +32,7 @@ fn command_child_store() -> &'static ChildStore {
   &STORE
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 #[allow(missing_docs)]
 pub enum Buffer {
