@@ -63,9 +63,9 @@ pub struct TerminatedPayload {
 #[non_exhaustive]
 pub enum CommandEvent {
   /// Stderr bytes until a newline (\n) or carriage return (\r) is found.
-  Stderr(Buffer),
+  Stderr(Vec<u8>),
   /// Stdout bytes until a newline (\n) or carriage return (\r) is found.
-  Stdout(Buffer),
+  Stdout(Vec<u8>),
   /// An error happened waiting for the command to finish or converting the stdout/stderr bytes to an UTF-8 string.
   Error(String),
   /// Command process terminated.
@@ -245,23 +245,17 @@ impl Command {
   ///   let mut i = 0;
   ///   while let Some(event) = rx.recv().await {
   ///     if let CommandEvent::Stdout(line) = event {
-  ///       match line {
-  ///         Buffer::Text(line) => {
-  ///           println!("got: {}", line);
-  ///           i += 1;
-  ///           if i == 4 {
-  ///             child.write("message from Rust\n".as_bytes()).unwrap();
-  ///             i = 0;
-  ///           }
-  ///         }
-  ///         _ => {}
+  ///       println!("got: {}", String::from_utf8(line).unwrap());
+  ///       i += 1;
+  ///       if i == 4 {
+  ///         child.write("message from Rust\n".as_bytes()).unwrap();
+  ///         i = 0;
   ///       }
   ///     }
   ///   }
   /// });
   /// ```
   pub fn spawn(self) -> crate::api::Result<(Receiver<CommandEvent>, CommandChild)> {
-    let encoding = self.encoding;
     let mut command: StdCommand = self.into();
     let (stdout_reader, stdout_writer) = pipe()?;
     let (stderr_reader, stderr_writer) = pipe()?;
@@ -284,14 +278,12 @@ impl Command {
       guard.clone(),
       stdout_reader,
       CommandEvent::Stdout,
-      encoding,
     );
     spawn_pipe_reader(
       tx.clone(),
       guard.clone(),
       stderr_reader,
       CommandEvent::Stderr,
-      encoding,
     );
 
     spawn(move || {
@@ -368,7 +360,7 @@ impl Command {
       let mut code = None;
       let mut stdout = Vec::<u8>::new();
       let mut stderr = Vec::<u8>::new();
-      
+
       const NEWLINE_BYTE: u8 = 10;
       while let Some(event) = rx.recv().await {
         match event {
@@ -376,13 +368,13 @@ impl Command {
             code = payload.code;
           }
           CommandEvent::Stdout(line) => {
-            stdout.extend(line.to_bytes());
+            stdout.extend(line);
             stdout.push(NEWLINE_BYTE);
-          },
+          }
           CommandEvent::Stderr(line) => {
-            stderr.extend(line.to_bytes());
+            stderr.extend(line);
             stderr.push(NEWLINE_BYTE);
-          },
+          }
           CommandEvent::Error(_) => {}
         }
       }
@@ -397,41 +389,25 @@ impl Command {
   }
 }
 
-fn spawn_pipe_reader<F: Fn(Buffer) -> CommandEvent + Send + Copy + 'static>(
+fn spawn_pipe_reader<F: Fn(Vec<u8>) -> CommandEvent + Send + Copy + 'static>(
   tx: Sender<CommandEvent>,
   guard: Arc<RwLock<()>>,
   pipe_reader: PipeReader,
   wrapper: F,
-  encoding: EncodingWrapper,
 ) {
   spawn(move || {
     let _lock = guard.read().unwrap();
     let mut reader = BufReader::new(pipe_reader);
 
-    let mut buf = Vec::new();
     loop {
-      buf.clear();
+      let mut buf = Vec::new();
       match tauri_utils::io::read_line(&mut reader, &mut buf) {
         Ok(n) => {
           if n == 0 {
             break;
           }
           let tx_ = tx.clone();
-          let line = match encoding {
-            EncodingWrapper::Text(character_encoding) => match character_encoding {
-              Some(encoding) => Ok(Buffer::Text(
-                encoding.decode_with_bom_removal(&buf).0.into(),
-              )),
-              None => String::from_utf8(buf.clone()).map(|text| Buffer::Text(text)),
-            },
-            EncodingWrapper::Raw => Ok(Buffer::Raw(buf.clone())),
-          };
-          block_on_task(async move {
-            let _ = match line {
-              Ok(line) => tx_.send(wrapper(line)).await,
-              Err(e) => tx_.send(CommandEvent::Error(e.to_string())).await,
-            };
-          });
+          let _ = block_on_task(async move { tx_.send(wrapper(buf)).await });
         }
         Err(e) => {
           let tx_ = tx.clone();
@@ -460,12 +436,9 @@ mod tests {
           CommandEvent::Terminated(payload) => {
             assert_eq!(payload.code, Some(0));
           }
-          CommandEvent::Stdout(line) => match line {
-            Buffer::Text(line) => {
-              assert_eq!(line, "This is a test doc!");
-            }
-            _ => {}
-          },
+          CommandEvent::Stdout(line) => {
+            assert_eq!(String::from_utf8(line).unwrap(), "This is a test doc!");
+          }
           _ => {}
         }
       }
@@ -486,12 +459,9 @@ mod tests {
           CommandEvent::Terminated(payload) => {
             assert_eq!(payload.code, Some(0));
           }
-          CommandEvent::Stdout(line) => match line {
-            Buffer::Raw(line) => {
-              assert_eq!(line, "This is a test doc!".as_bytes());
-            }
-            _ => {}
-          },
+          CommandEvent::Stdout(line) => {
+            assert_eq!(String::from_utf8(line).unwrap(), "This is a test doc!");
+          }
           _ => {}
         }
       }
@@ -511,12 +481,12 @@ mod tests {
           CommandEvent::Terminated(payload) => {
             assert_eq!(payload.code, Some(1));
           }
-          CommandEvent::Stderr(line) => match line {
-            Buffer::Text(line) => {
-              assert_eq!(line, "cat: test/api/: Is a directory");
-            }
-            _ => {}
-          },
+          CommandEvent::Stderr(line) => {
+            assert_eq!(
+              String::from_utf8(line).unwrap(),
+              "cat: test/api/: Is a directory"
+            );
+          }
           _ => {}
         }
       }
@@ -536,12 +506,12 @@ mod tests {
           CommandEvent::Terminated(payload) => {
             assert_eq!(payload.code, Some(1));
           }
-          CommandEvent::Stderr(line) => match line {
-            Buffer::Raw(line) => {
-              assert_eq!(line, "cat: test/api/: Is a directory".as_bytes());
-            }
-            _ => {}
-          },
+          CommandEvent::Stderr(line) => {
+            assert_eq!(
+              String::from_utf8(line).unwrap(),
+              "cat: test/api/: Is a directory"
+            );
+          }
           _ => {}
         }
       }
@@ -555,7 +525,10 @@ mod tests {
     let output = cmd.output().unwrap();
 
     assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "This is a test doc!\n");
+    assert_eq!(
+      String::from_utf8(output.stdout).unwrap(),
+      "This is a test doc!\n"
+    );
   }
 
   #[cfg(not(windows))]
@@ -565,6 +538,9 @@ mod tests {
     let output = cmd.output().unwrap();
 
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
-    assert_eq!(String::from_utf8(output.stderr).unwrap(), "cat: test/api/: Is a directory\n");
+    assert_eq!(
+      String::from_utf8(output.stderr).unwrap(),
+      "cat: test/api/: Is a directory\n"
+    );
   }
 }
