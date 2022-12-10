@@ -5,7 +5,10 @@
 #![allow(unused_imports)]
 
 use super::InvokeContext;
-use crate::{api::ipc::CallbackFn, Runtime};
+use crate::{
+  api::{ipc::CallbackFn, process::TerminatedPayload},
+  Runtime,
+};
 #[cfg(shell_scope)]
 use crate::{Manager, Scopes};
 use encoding_rs::Encoding;
@@ -30,6 +33,21 @@ fn command_child_store() -> &'static ChildStore {
   use once_cell::sync::Lazy;
   static STORE: Lazy<ChildStore> = Lazy::new(Default::default);
   &STORE
+}
+
+/// A event sent to the command callback.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", content = "payload")]
+#[non_exhaustive]
+pub enum JSCommandEvent {
+  /// Stderr bytes until a newline (\n) or carriage return (\r) is found.
+  Stderr(Buffer),
+  /// Stdout bytes until a newline (\n) or carriage return (\r) is found.
+  Stdout(Buffer),
+  /// An error happened waiting for the command to finish or converting the stdout/stderr bytes to an UTF-8 string.
+  Error(String),
+  /// Command process terminated.
+  Terminated(TerminatedPayload),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -184,6 +202,7 @@ impl Cmd {
           }
         }
       }
+      let encoding = command.encoding;
       let (mut rx, child) = command.spawn()?;
 
       let pid = child.pid();
@@ -191,10 +210,33 @@ impl Cmd {
 
       crate::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
-          if matches!(event, crate::api::process::CommandEvent::Terminated(_)) {
-            command_child_store().lock().unwrap().remove(&pid);
-          }
-          let js = crate::api::ipc::format_callback(on_event_fn, &event)
+          let event_to_send = match event {
+            crate::api::process::CommandEvent::Terminated(payload) => {
+              command_child_store().lock().unwrap().remove(&pid);
+
+              JSCommandEvent::Terminated(payload)
+            }
+            crate::api::process::CommandEvent::Error(error) => JSCommandEvent::Error(error),
+            crate::api::process::CommandEvent::Stderr(line) => match encoding {
+              EncodingWrapper::Raw => JSCommandEvent::Stderr(Buffer::Raw(line)),
+              EncodingWrapper::Text(character_encoding) => match character_encoding {
+                Some(encoding) => JSCommandEvent::Stderr(Buffer::Text(
+                  encoding.decode_with_bom_removal(&line).0.into(),
+                )),
+                None => JSCommandEvent::Stderr(Buffer::Text(String::from_utf8(line).unwrap())),
+              },
+            },
+            crate::api::process::CommandEvent::Stdout(line) => match encoding {
+              EncodingWrapper::Raw => JSCommandEvent::Stdout(Buffer::Raw(line)),
+              EncodingWrapper::Text(character_encoding) => match character_encoding {
+                Some(encoding) => JSCommandEvent::Stdout(Buffer::Text(
+                  encoding.decode_with_bom_removal(&line).0.into(),
+                )),
+                None => JSCommandEvent::Stdout(Buffer::Text(String::from_utf8(line).unwrap())),
+              },
+            }
+          };
+          let js = crate::api::ipc::format_callback(on_event_fn, &event_to_send)
             .expect("unable to serialize CommandEvent");
 
           let _ = context.window.eval(js.as_str());

@@ -59,7 +59,6 @@ pub struct TerminatedPayload {
 
 /// A event sent to the command callback.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "event", content = "payload")]
 #[non_exhaustive]
 pub enum CommandEvent {
   /// Stderr bytes until a newline (\n) or carriage return (\r) is found.
@@ -80,7 +79,7 @@ pub struct Command {
   env_clear: bool,
   env: HashMap<String, String>,
   current_dir: Option<PathBuf>,
-  encoding: EncodingWrapper,
+  pub encoding: EncodingWrapper,
 }
 
 /// Spawned child process.
