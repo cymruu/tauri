@@ -1,5 +1,10 @@
 # Changelog
 
+## \[1.3.0]
+
+- Add `is_minimized()` window method.
+  - [62144ef3](https://www.github.com/tauri-apps/tauri/commit/62144ef3be63b237869e511826edfb938e2c7174) feat: add is_minimized (fix [#3878](https://www.github.com/tauri-apps/tauri/pull/3878)) ([#5618](https://www.github.com/tauri-apps/tauri/pull/5618)) on 2022-12-13
+
 ## \[1.2.0]
 
 - Added the `acceptFirstMouse` window option.
