@@ -58,7 +58,7 @@ pub struct TerminatedPayload {
 }
 
 /// A event sent to the command callback.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CommandEvent {
   /// Stderr bytes until a newline (\n) or carriage return (\r) is found.
